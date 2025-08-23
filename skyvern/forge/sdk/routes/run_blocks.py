@@ -17,16 +17,17 @@ from skyvern.forge.sdk.schemas.organizations import Organization
 from skyvern.forge.sdk.services import org_auth_service
 from skyvern.forge.sdk.workflow.models.parameter import WorkflowParameterType
 from skyvern.forge.sdk.workflow.models.workflow import WorkflowRequestBody
-from skyvern.forge.sdk.workflow.models.yaml import (
+from skyvern.schemas.run_blocks import CredentialType, LoginRequest
+from skyvern.schemas.runs import ProxyLocation, RunType, WorkflowRunRequest, WorkflowRunResponse
+from skyvern.schemas.workflows import (
     BitwardenLoginCredentialParameterYAML,
     LoginBlockYAML,
     OnePasswordCredentialParameterYAML,
     WorkflowCreateYAMLRequest,
     WorkflowDefinitionYAML,
     WorkflowParameterYAML,
+    WorkflowStatus,
 )
-from skyvern.schemas.run_blocks import CredentialType, LoginRequest
-from skyvern.schemas.runs import ProxyLocation, RunType, WorkflowRunRequest, WorkflowRunResponse
 from skyvern.services import workflow_service
 
 LOG = structlog.get_logger()
@@ -79,6 +80,7 @@ async def login(
         proxy_location=login_request.proxy_location,
         max_screenshot_scrolling_times=login_request.max_screenshot_scrolling_times,
         extra_http_headers=login_request.extra_http_headers,
+        status=WorkflowStatus.auto_generated,
     )
     # 2. add a login block to the workflow
     label = "login"

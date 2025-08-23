@@ -42,6 +42,7 @@ class TaskV2(BaseModel):
     totp_identifier: str | None = None
     proxy_location: ProxyLocation | None = None
     webhook_callback_url: str | None = None
+    webhook_failure_reason: str | None = None
     extracted_information_schema: dict | list | str | None = None
     error_code_mapping: dict | None = None
     model: dict[str, Any] | None = None
@@ -50,6 +51,7 @@ class TaskV2(BaseModel):
     finished_at: datetime | None = None
     max_screenshot_scrolls: int | None = Field(default=None, alias="max_screenshot_scrolling_times")
     extra_http_headers: dict[str, str] | None = None
+    browser_address: str | None = None
 
     created_at: datetime
     modified_at: datetime
@@ -152,6 +154,7 @@ class TaskV2Request(BaseModel):
     error_code_mapping: dict[str, str] | None = None
     max_screenshot_scrolls: int | None = None
     extra_http_headers: dict[str, str] | None = None
+    browser_address: str | None = None
 
     @field_validator("url", "webhook_callback_url", "totp_verification_url")
     @classmethod

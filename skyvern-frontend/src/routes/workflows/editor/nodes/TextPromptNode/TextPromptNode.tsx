@@ -1,47 +1,37 @@
 import { HelpTooltip } from "@/components/HelpTooltip";
 import { Label } from "@/components/ui/label";
 import { Separator } from "@/components/ui/separator";
-import {
-  Handle,
-  NodeProps,
-  Position,
-  useEdges,
-  useNodes,
-  useReactFlow,
-} from "@xyflow/react";
+import { Handle, NodeProps, Position, useReactFlow } from "@xyflow/react";
 import { useState } from "react";
-import { AppNode } from "..";
 import { helpTooltips } from "../../helpContent";
-import { getAvailableOutputParameterKeys } from "../../workflowEditorUtils";
-import { ParametersMultiSelect } from "../TaskNode/ParametersMultiSelect";
 import { type TextPromptNode } from "./types";
 import { WorkflowBlockInputTextarea } from "@/components/WorkflowBlockInputTextarea";
 import { WorkflowDataSchemaInputGroup } from "@/components/DataSchemaInputGroup/WorkflowDataSchemaInputGroup";
 import { dataSchemaExampleValue } from "../types";
 import { useIsFirstBlockInWorkflow } from "../../hooks/useIsFirstNodeInWorkflow";
 import { ModelSelector } from "@/components/ModelSelector";
-import { useDebugStore } from "@/store/useDebugStore";
 import { cn } from "@/util/utils";
 import { NodeHeader } from "../components/NodeHeader";
 import { useParams } from "react-router-dom";
+import { statusIsRunningOrQueued } from "@/routes/tasks/types";
+import { useWorkflowRunQuery } from "@/routes/workflows/hooks/useWorkflowRunQuery";
 
 function TextPromptNode({ id, data }: NodeProps<TextPromptNode>) {
   const { updateNodeData } = useReactFlow();
-  const { debuggable, editable, label } = data;
-  const debugStore = useDebugStore();
-  const elideFromDebugging = debugStore.isDebugMode && !debuggable;
+  const { editable, label } = data;
   const { blockLabel: urlBlockLabel } = useParams();
-  const thisBlockIsPlaying =
+  const { data: workflowRun } = useWorkflowRunQuery();
+  const workflowRunIsRunningOrQueued =
+    workflowRun && statusIsRunningOrQueued(workflowRun);
+  const thisBlockIsTargetted =
     urlBlockLabel !== undefined && urlBlockLabel === label;
+  const thisBlockIsPlaying =
+    workflowRunIsRunningOrQueued && thisBlockIsTargetted;
   const [inputs, setInputs] = useState({
     prompt: data.prompt,
     jsonSchema: data.jsonSchema,
     model: data.model,
   });
-
-  const nodes = useNodes<AppNode>();
-  const edges = useEdges();
-  const outputParameterKeys = getAvailableOutputParameterKeys(nodes, edges, id);
 
   function handleChange(key: string, value: unknown) {
     if (!editable) {
@@ -71,14 +61,14 @@ function TextPromptNode({ id, data }: NodeProps<TextPromptNode>) {
         className={cn(
           "transform-origin-center w-[30rem] space-y-4 rounded-lg bg-slate-elevation3 px-6 py-4 transition-all",
           {
-            "pointer-events-none bg-slate-950 outline outline-2 outline-slate-300":
-              thisBlockIsPlaying,
+            "pointer-events-none": thisBlockIsPlaying,
+            "bg-slate-950 outline outline-2 outline-slate-300":
+              thisBlockIsTargetted,
           },
         )}
       >
         <NodeHeader
           blockLabel={label}
-          disabled={elideFromDebugging}
           editable={editable}
           nodeId={id}
           totpIdentifier={null}
@@ -106,15 +96,6 @@ function TextPromptNode({ id, data }: NodeProps<TextPromptNode>) {
             value={inputs.prompt}
             placeholder="What do you want to generate?"
             className="nopan text-xs"
-          />
-        </div>
-        <div className="space-y-2">
-          <ParametersMultiSelect
-            availableOutputParameters={outputParameterKeys}
-            parameters={data.parameterKeys}
-            onParametersChange={(parameterKeys) => {
-              updateNodeData(id, { parameterKeys });
-            }}
           />
         </div>
         <Separator />

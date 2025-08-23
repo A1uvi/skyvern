@@ -69,12 +69,25 @@ SINGLE_CLICK_AGENT_LLM_API_HANDLER = (
     if SETTINGS_MANAGER.SINGLE_CLICK_AGENT_LLM_KEY
     else SECONDARY_LLM_API_HANDLER
 )
+SINGLE_INPUT_AGENT_LLM_API_HANDLER = (
+    LLMAPIHandlerFactory.get_llm_api_handler(SETTINGS_MANAGER.SINGLE_INPUT_AGENT_LLM_KEY)
+    if SETTINGS_MANAGER.SINGLE_INPUT_AGENT_LLM_KEY
+    else SECONDARY_LLM_API_HANDLER
+)
+EXTRACTION_LLM_API_HANDLER = (
+    LLMAPIHandlerFactory.get_llm_api_handler(SETTINGS_MANAGER.EXTRACTION_LLM_KEY)
+    if SETTINGS_MANAGER.EXTRACTION_LLM_KEY
+    else LLM_API_HANDLER
+)
+SVG_CSS_CONVERTER_LLM_API_HANDLER = SECONDARY_LLM_API_HANDLER if SETTINGS_MANAGER.SECONDARY_LLM_KEY else None
+
 WORKFLOW_CONTEXT_MANAGER = WorkflowContextManager()
 WORKFLOW_SERVICE = WorkflowService()
 AGENT_FUNCTION = AgentFunction()
 PERSISTENT_SESSIONS_MANAGER = PersistentSessionsManager(database=DATABASE)
 scrape_exclude: ScrapeExcludeFunc | None = None
 authentication_function: Callable[[str], Awaitable[Organization]] | None = None
+authenticate_user_function: Callable[[str], Awaitable[str | None]] | None = None
 setup_api_app: Callable[[FastAPI], None] | None = None
 
 agent = ForgeAgent()

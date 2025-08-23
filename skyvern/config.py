@@ -76,6 +76,10 @@ class Settings(BaseSettings):
     MAX_UPLOAD_FILE_SIZE: int = 10 * 1024 * 1024  # 10 MB
     PRESIGNED_URL_EXPIRATION: int = 60 * 60 * 24  # 24 hours
 
+    # Azure Blob Storage settings
+    AZURE_STORAGE_ACCOUNT_NAME: str | None = None
+    AZURE_STORAGE_ACCOUNT_KEY: str | None = None
+
     SKYVERN_TELEMETRY: bool = True
     ANALYTICS_ID: str = "anonymous"
 
@@ -115,7 +119,9 @@ class Settings(BaseSettings):
     SECONDARY_LLM_KEY: str | None = None
     SELECT_AGENT_LLM_KEY: str | None = None
     SINGLE_CLICK_AGENT_LLM_KEY: str | None = None
+    SINGLE_INPUT_AGENT_LLM_KEY: str | None = None
     PROMPT_BLOCK_LLM_KEY: str | None = None
+    EXTRACTION_LLM_KEY: str | None = None
     # COMMON
     LLM_CONFIG_TIMEOUT: int = 300
     LLM_CONFIG_MAX_TOKENS: int = 4096
@@ -136,6 +142,7 @@ class Settings(BaseSettings):
     ENABLE_OPENAI_COMPATIBLE: bool = False
     # OPENAI
     OPENAI_API_KEY: str | None = None
+    GPT5_REASONING_EFFORT: str | None = "medium"
     # ANTHROPIC
     ANTHROPIC_API_KEY: str | None = None
     ANTHROPIC_CUA_LLM_KEY: str = "ANTHROPIC_CLAUDE3.7_SONNET"
@@ -215,6 +222,27 @@ class Settings(BaseSettings):
     AZURE_O3_API_BASE: str | None = None
     AZURE_O3_API_VERSION: str = "2025-01-01-preview"
 
+    # AZURE gpt-5
+    ENABLE_AZURE_GPT5: bool = False
+    AZURE_GPT5_DEPLOYMENT: str = "gpt-5"
+    AZURE_GPT5_API_KEY: str | None = None
+    AZURE_GPT5_API_BASE: str | None = None
+    AZURE_GPT5_API_VERSION: str = "2025-04-01-preview"
+
+    # AZURE gpt-5 mini
+    ENABLE_AZURE_GPT5_MINI: bool = False
+    AZURE_GPT5_MINI_DEPLOYMENT: str = "gpt-5-mini"
+    AZURE_GPT5_MINI_API_KEY: str | None = None
+    AZURE_GPT5_MINI_API_BASE: str | None = None
+    AZURE_GPT5_MINI_API_VERSION: str = "2025-04-01-preview"
+
+    # AZURE gpt-5 nano
+    ENABLE_AZURE_GPT5_NANO: bool = False
+    AZURE_GPT5_NANO_DEPLOYMENT: str = "gpt-5-nano"
+    AZURE_GPT5_NANO_API_KEY: str | None = None
+    AZURE_GPT5_NANO_API_BASE: str | None = None
+    AZURE_GPT5_NANO_API_VERSION: str = "2025-04-01-preview"
+
     # GEMINI
     GEMINI_API_KEY: str | None = None
 
@@ -245,6 +273,11 @@ class Settings(BaseSettings):
     GROQ_MODEL: str | None = None
     GROQ_API_BASE: str = "https://api.groq.com/openai/v1"
 
+    # MOONSHOT AI
+    ENABLE_MOONSHOT: bool = False
+    MOONSHOT_API_KEY: str | None = None
+    MOONSHOT_API_BASE: str = "https://api.moonshot.cn/v1"
+
     # TOTP Settings
     TOTP_LIFESPAN_MINUTES: int = 10
     VERIFICATION_CODE_INITIAL_WAIT_TIME_SECS: int = 40
@@ -254,6 +287,7 @@ class Settings(BaseSettings):
     BITWARDEN_CLIENT_ID: str | None = None
     BITWARDEN_CLIENT_SECRET: str | None = None
     BITWARDEN_MASTER_PASSWORD: str | None = None
+    BITWARDEN_EMAIL: str | None = None
     OP_SERVICE_ACCOUNT_TOKEN: str | None = None
 
     # Skyvern Auth Bitwarden Settings
@@ -294,6 +328,25 @@ class Settings(BaseSettings):
     TRACE_PROVIDER_HOST: str | None = None
     TRACE_PROVIDER_API_KEY: str = "fillmein"
 
+    # Debug Session Settings
+    DEBUG_SESSION_TIMEOUT_MINUTES: int = 60 * 4
+    """
+    The timeout for a persistent browser session backing a debug session,
+    in minutes.
+    """
+
+    DEBUG_SESSION_TIMEOUT_THRESHOLD_MINUTES: int = 5
+    """
+    If there are `DEBUG_SESSION_TIMEOUT_THRESHOLD_MINUTES` or more minutes left
+    in the persistent browser session (`started_at` + `timeout_minutes`), then
+    the `timeout_minutes` of the persistent browser session can be extended.
+    Otherwise we'll consider the persistent browser session to be expired.
+    """
+
+    ENCRYPTOR_AES_SECRET_KEY: str = "fillmein"
+    ENCRYPTOR_AES_SALT: str | None = None
+    ENCRYPTOR_AES_IV: str | None = None
+
     def get_model_name_to_llm_key(self) -> dict[str, dict[str, str]]:
         """
         Keys are model names available to blocks in the frontend. These map to key names
@@ -308,23 +361,24 @@ class Settings(BaseSettings):
                     "label": "Gemini 2.5 Flash",
                 },
                 "azure/gpt-4.1": {"llm_key": "AZURE_OPENAI_GPT4_1", "label": "GPT 4.1"},
+                "azure/gpt-5": {"llm_key": "AZURE_OPENAI_GPT5", "label": "GPT 5"},
                 "azure/o3": {"llm_key": "AZURE_OPENAI_O3", "label": "GPT O3"},
-                # "us.anthropic.claude-opus-4-20250514-v1:0": {
-                #     "llm_key": "BEDROCK_ANTHROPIC_CLAUDE4_OPUS_INFERENCE_PROFILE",
-                #     "label": "Anthropic Claude 4 Opus",
-                # },
-                # "us.anthropic.claude-sonnet-4-20250514-v1:0": {
-                #     "llm_key": "BEDROCK_ANTHROPIC_CLAUDE4_SONNET_INFERENCE_PROFILE",
-                #     "label": "Anthropic Claude 4 Sonnet",
-                # },
-                "claude-sonnet-4-20250514": {
-                    "llm_key": "ANTHROPIC_CLAUDE4_SONNET",
-                    "label": "Anthropic Claude 4 Sonnet",
-                },
-                "claude-opus-4-20250514": {
-                    "llm_key": "ANTHROPIC_CLAUDE4_OPUS",
+                "us.anthropic.claude-opus-4-20250514-v1:0": {
+                    "llm_key": "BEDROCK_ANTHROPIC_CLAUDE4_OPUS_INFERENCE_PROFILE",
                     "label": "Anthropic Claude 4 Opus",
                 },
+                "us.anthropic.claude-sonnet-4-20250514-v1:0": {
+                    "llm_key": "BEDROCK_ANTHROPIC_CLAUDE4_SONNET_INFERENCE_PROFILE",
+                    "label": "Anthropic Claude 4 Sonnet",
+                },
+                # "claude-sonnet-4-20250514": {
+                #     "llm_key": "ANTHROPIC_CLAUDE4_SONNET",
+                #     "label": "Anthropic Claude 4 Sonnet",
+                # },
+                # "claude-opus-4-20250514": {
+                #     "llm_key": "ANTHROPIC_CLAUDE4_OPUS",
+                #     "label": "Anthropic Claude 4 Opus",
+                # },
             }
         else:
             # TODO: apparently the list for OSS is to be much larger
@@ -335,6 +389,7 @@ class Settings(BaseSettings):
                     "label": "Gemini 2.5 Flash",
                 },
                 "azure/gpt-4.1": {"llm_key": "AZURE_OPENAI_GPT4_1", "label": "GPT 4.1"},
+                "azure/gpt-5": {"llm_key": "AZURE_OPENAI_GPT5", "label": "GPT 5"},
                 "azure/o3": {"llm_key": "AZURE_OPENAI_O3", "label": "GPT O3"},
                 "us.anthropic.claude-opus-4-20250514-v1:0": {
                     "llm_key": "BEDROCK_ANTHROPIC_CLAUDE4_OPUS_INFERENCE_PROFILE",

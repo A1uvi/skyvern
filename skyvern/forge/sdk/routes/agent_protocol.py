@@ -1,5 +1,7 @@
 import asyncio
+from datetime import datetime, timedelta, timezone
 from enum import Enum
+from functools import partial
 from typing import Annotated, Any
 
 import structlog
@@ -10,7 +12,7 @@ from fastapi.responses import ORJSONResponse
 from skyvern import analytics
 from skyvern._version import __version__
 from skyvern.config import settings
-from skyvern.exceptions import MissingBrowserAddressError
+from skyvern.exceptions import BrowserSessionNotRenewable, MissingBrowserAddressError
 from skyvern.forge import app
 from skyvern.forge.prompts import prompt_engine
 from skyvern.forge.sdk.api.llm.exceptions import LLMProviderError
@@ -20,6 +22,7 @@ from skyvern.forge.sdk.core.curl_converter import curl_to_http_request_block_par
 from skyvern.forge.sdk.core.permissions.permission_checker_factory import PermissionCheckerFactory
 from skyvern.forge.sdk.core.security import generate_skyvern_signature
 from skyvern.forge.sdk.db.enums import OrganizationAuthTokenType
+from skyvern.forge.sdk.db.exceptions import NotFoundError
 from skyvern.forge.sdk.executor.factory import AsyncExecutorFactory
 from skyvern.forge.sdk.models import Step
 from skyvern.forge.sdk.routes.code_samples import (
@@ -37,12 +40,14 @@ from skyvern.forge.sdk.routes.code_samples import (
 )
 from skyvern.forge.sdk.routes.routers import base_router, legacy_base_router, legacy_v2_router
 from skyvern.forge.sdk.schemas.ai_suggestions import AISuggestionBase, AISuggestionRequest
+from skyvern.forge.sdk.schemas.debug_sessions import DebugSession
 from skyvern.forge.sdk.schemas.organizations import (
     GetOrganizationAPIKeysResponse,
     GetOrganizationsResponse,
     Organization,
     OrganizationUpdate,
 )
+from skyvern.forge.sdk.schemas.persistent_browser_sessions import PersistentBrowserSession
 from skyvern.forge.sdk.schemas.task_generations import GenerateTaskRequest, TaskGeneration
 from skyvern.forge.sdk.schemas.task_v2 import TaskV2Request
 from skyvern.forge.sdk.schemas.tasks import (
@@ -63,7 +68,6 @@ from skyvern.forge.sdk.workflow.exceptions import (
     InvalidTemplateWorkflowPermanentId,
     WorkflowParameterMissingRequiredValue,
 )
-from skyvern.forge.sdk.workflow.models.block import BlockType
 from skyvern.forge.sdk.workflow.models.workflow import (
     RunWorkflowResponse,
     Workflow,
@@ -71,9 +75,7 @@ from skyvern.forge.sdk.workflow.models.workflow import (
     WorkflowRun,
     WorkflowRunResponseBase,
     WorkflowRunStatus,
-    WorkflowStatus,
 )
-from skyvern.forge.sdk.workflow.models.yaml import WorkflowCreateYAMLRequest
 from skyvern.schemas.artifacts import EntityType, entity_type_to_param
 from skyvern.schemas.runs import (
     CUA_ENGINES,
@@ -87,7 +89,7 @@ from skyvern.schemas.runs import (
     WorkflowRunRequest,
     WorkflowRunResponse,
 )
-from skyvern.schemas.workflows import WorkflowRequest
+from skyvern.schemas.workflows import BlockType, WorkflowCreateYAMLRequest, WorkflowRequest, WorkflowStatus
 from skyvern.services import block_service, run_service, task_v1_service, task_v2_service, workflow_service
 from skyvern.webeye.actions.actions import Action
 
@@ -171,6 +173,7 @@ async def run_task(
             model=run_request.model,
             max_screenshot_scrolls=run_request.max_screenshot_scrolls,
             extra_http_headers=run_request.extra_http_headers,
+            browser_address=run_request.browser_address,
         )
         task_v1_response = await task_v1_service.run_task(
             task=task_v1_request,
@@ -229,6 +232,7 @@ async def run_task(
                 model=run_request.model,
                 max_screenshot_scrolling_times=run_request.max_screenshot_scrolls,
                 extra_http_headers=run_request.extra_http_headers,
+                browser_address=run_request.browser_address,
             )
         except MissingBrowserAddressError as e:
             raise HTTPException(status_code=400, detail=str(e)) from e
@@ -328,6 +332,7 @@ async def run_workflow(
         browser_session_id=workflow_run_request.browser_session_id,
         max_screenshot_scrolls=workflow_run_request.max_screenshot_scrolls,
         extra_http_headers=workflow_run_request.extra_http_headers,
+        browser_address=workflow_run_request.browser_address,
     )
 
     try:
@@ -845,6 +850,8 @@ async def retry_run_webhook(
     response_model=BlockRunResponse,
 )
 async def run_block(
+    request: Request,
+    background_tasks: BackgroundTasks,
     block_run_request: BlockRunRequest,
     organization: Organization = Depends(org_auth_service.get_current_org),
     template: bool = Query(False),
@@ -864,14 +871,15 @@ async def run_block(
 
     browser_session_id = block_run_request.browser_session_id
 
-    asyncio.create_task(
-        block_service.execute_blocks(
-            api_key=x_api_key or "",
-            block_labels=block_run_request.block_labels,
-            workflow_run_id=workflow_run.workflow_run_id,
-            organization=organization,
-            browser_session_id=browser_session_id,
-        )
+    await block_service.execute_blocks(
+        request=request,
+        background_tasks=background_tasks,
+        api_key=x_api_key or "",
+        block_labels=block_run_request.block_labels,
+        workflow_id=block_run_request.workflow_id,
+        workflow_run_id=workflow_run.workflow_run_id,
+        organization=organization,
+        browser_session_id=browser_session_id,
     )
 
     return BlockRunResponse(
@@ -1525,7 +1533,7 @@ async def get_workflow_run_with_workflow_id(
         organization_id=current_org.organization_id,
         include_cost=True,
     )
-    return_dict = workflow_run_status_response.model_dump()
+    return_dict = workflow_run_status_response.model_dump(by_alias=True)
 
     browser_session = await app.DATABASE.get_persistent_browser_session_by_runnable_id(
         runnable_id=workflow_run_id,
@@ -1535,14 +1543,6 @@ async def get_workflow_run_with_workflow_id(
     browser_session_id = browser_session.persistent_browser_session_id if browser_session else None
 
     return_dict["browser_session_id"] = browser_session_id or return_dict.get("browser_session_id")
-
-    task_v2 = await app.DATABASE.get_task_v2_by_workflow_run_id(
-        workflow_run_id=workflow_run_id,
-        organization_id=current_org.organization_id,
-    )
-
-    if task_v2:
-        return_dict["task_v2"] = task_v2.model_dump(by_alias=True)
 
     return return_dict
 
@@ -1917,6 +1917,7 @@ async def run_task_v2(
             max_screenshot_scrolling_times=data.max_screenshot_scrolls,
             browser_session_id=data.browser_session_id,
             extra_http_headers=data.extra_http_headers,
+            browser_address=data.browser_address,
         )
     except MissingBrowserAddressError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
@@ -2005,3 +2006,220 @@ async def _flatten_workflow_run_timeline(organization_id: str, workflow_run_id: 
         final_workflow_run_block_timeline.extend(thought_timeline)
     final_workflow_run_block_timeline.sort(key=lambda x: x.created_at, reverse=True)
     return final_workflow_run_block_timeline
+
+
+@base_router.get(
+    "/debug-session/{workflow_permanent_id}",
+    include_in_schema=False,
+)
+async def get_or_create_debug_session_by_user_and_workflow_permanent_id(
+    workflow_permanent_id: str,
+    current_org: Organization = Depends(org_auth_service.get_current_org),
+    current_user_id: str = Depends(org_auth_service.get_current_user_id),
+) -> DebugSession:
+    """
+    `current_user_id` is a unique identifier for a user, but does not map to an
+    entity in the database (at time of writing)
+
+    If the debug session does not exist, a new one will be created.
+
+    In addition, the timeout for the debug session's browser session will be
+    extended to 4 hours from the time of the request. If the browser session
+    cannot be renewed, a new one will be created and assigned to the debug
+    session. The browser_session that could not be renewed will be closed.
+    """
+
+    debug_session = await app.DATABASE.get_debug_session(
+        organization_id=current_org.organization_id,
+        user_id=current_user_id,
+        workflow_permanent_id=workflow_permanent_id,
+    )
+
+    if not debug_session:
+        LOG.info(
+            "Existing debug session not found, created a new one, along with a new browser session",
+            organization_id=current_org.organization_id,
+            user_id=current_user_id,
+            workflow_permanent_id=workflow_permanent_id,
+        )
+
+        return await new_debug_session(
+            workflow_permanent_id,
+            current_org,
+            current_user_id,
+        )
+
+    LOG.info(
+        "Existing debug session found",
+        debug_session_id=debug_session.debug_session_id,
+        browser_session_id=debug_session.browser_session_id,
+        organization_id=current_org.organization_id,
+        user_id=current_user_id,
+        workflow_permanent_id=workflow_permanent_id,
+    )
+
+    try:
+        await app.PERSISTENT_SESSIONS_MANAGER.renew_or_close_session(
+            debug_session.browser_session_id,
+            current_org.organization_id,
+        )
+        return debug_session
+    except BrowserSessionNotRenewable as ex:
+        LOG.info(
+            "Browser session was non-renewable; creating a new debug session",
+            ex=str(ex),
+            debug_session_id=debug_session.debug_session_id,
+            browser_session_id=debug_session.browser_session_id,
+            organization_id=current_org.organization_id,
+            workflow_permanent_id=workflow_permanent_id,
+            user_id=current_user_id,
+        )
+
+        return await new_debug_session(
+            workflow_permanent_id,
+            current_org,
+            current_user_id,
+        )
+
+
+@base_router.post(
+    "/debug-session/{workflow_permanent_id}/new",
+    include_in_schema=False,
+)
+async def new_debug_session(
+    workflow_permanent_id: str,
+    current_org: Organization = Depends(org_auth_service.get_current_org),
+    current_user_id: str = Depends(org_auth_service.get_current_user_id),
+) -> DebugSession:
+    """
+    Create a new debug session, along with a new browser session. If any
+    existing debug sessions are found, "complete" them. Then close the browser
+    sessions associated with those completed debug sessions.
+
+    Return the new debug session.
+
+    CAVEAT: if an existing debug session for this user is <30s old, then we
+    return that instead. This is to curtail damage from browser session
+    spamming.
+    """
+
+    if current_user_id:
+        debug_session = await app.DATABASE.get_latest_debug_session_for_user(
+            organization_id=current_org.organization_id,
+            user_id=current_user_id,
+            workflow_permanent_id=workflow_permanent_id,
+        )
+
+        if debug_session:
+            now = datetime.now(timezone.utc)
+            created_at_utc = (
+                debug_session.created_at.replace(tzinfo=timezone.utc)
+                if debug_session.created_at.tzinfo is None
+                else debug_session.created_at
+            )
+            if now - created_at_utc < timedelta(seconds=30):
+                LOG.info(
+                    "Existing debug session is less than 30s old, returning it",
+                    debug_session_id=debug_session.debug_session_id,
+                    browser_session_id=debug_session.browser_session_id,
+                    organization_id=current_org.organization_id,
+                    user_id=current_user_id,
+                    workflow_permanent_id=workflow_permanent_id,
+                )
+                return debug_session
+
+    completed_debug_sessions = await app.DATABASE.complete_debug_sessions(
+        organization_id=current_org.organization_id,
+        user_id=current_user_id,
+        workflow_permanent_id=workflow_permanent_id,
+    )
+
+    LOG.info(
+        f"Completed {len(completed_debug_sessions)} pre-existing debug session(s)",
+        num_completed_debug_sessions=len(completed_debug_sessions),
+        organization_id=current_org.organization_id,
+        user_id=current_user_id,
+        workflow_permanent_id=workflow_permanent_id,
+    )
+
+    if completed_debug_sessions:
+        closeable_browser_sessions: list[PersistentBrowserSession] = []
+
+        for debug_session in completed_debug_sessions:
+            try:
+                browser_session = await app.DATABASE.get_persistent_browser_session(
+                    debug_session.browser_session_id,
+                    current_org.organization_id,
+                )
+            except NotFoundError:
+                browser_session = None
+
+            if browser_session and browser_session.completed_at is None:
+                closeable_browser_sessions.append(browser_session)
+
+        LOG.info(
+            f"Closing browser {len(closeable_browser_sessions)} browser session(s)",
+            organization_id=current_org.organization_id,
+            user_id=current_user_id,
+            workflow_permanent_id=workflow_permanent_id,
+        )
+
+        def handle_close_browser_session_error(
+            browser_session_id: str,
+            organization_id: str,
+            task: asyncio.Task,
+        ) -> None:
+            if task.exception():
+                LOG.error(
+                    f"Failed to close session: {task.exception()}",
+                    browser_session_id=browser_session_id,
+                    organization_id=organization_id,
+                )
+
+        for browser_session in closeable_browser_sessions:
+            LOG.info(
+                "Closing existing browser session for debug session",
+                browser_session_id=browser_session.persistent_browser_session_id,
+                organization_id=current_org.organization_id,
+            )
+
+            # NOTE(jdo): these may fail to actually close on infra, but the user
+            # wants (and should get) a new session regardless - so we will just
+            # log the error and continue
+            task = asyncio.create_task(
+                app.PERSISTENT_SESSIONS_MANAGER.close_session(
+                    current_org.organization_id,
+                    browser_session.persistent_browser_session_id,
+                )
+            )
+
+            task.add_done_callback(
+                partial(
+                    handle_close_browser_session_error,
+                    browser_session.persistent_browser_session_id,
+                    current_org.organization_id,
+                )
+            )
+
+    new_browser_session = await app.PERSISTENT_SESSIONS_MANAGER.create_session(
+        organization_id=current_org.organization_id,
+        timeout_minutes=settings.DEBUG_SESSION_TIMEOUT_MINUTES,
+    )
+
+    debug_session = await app.DATABASE.create_debug_session(
+        browser_session_id=new_browser_session.persistent_browser_session_id,
+        organization_id=current_org.organization_id,
+        user_id=current_user_id,
+        workflow_permanent_id=workflow_permanent_id,
+    )
+
+    LOG.info(
+        "Created new debug session",
+        debug_session_id=debug_session.debug_session_id,
+        browser_session_id=new_browser_session.persistent_browser_session_id,
+        organization_id=current_org.organization_id,
+        user_id=current_user_id,
+        workflow_permanent_id=workflow_permanent_id,
+    )
+
+    return debug_session

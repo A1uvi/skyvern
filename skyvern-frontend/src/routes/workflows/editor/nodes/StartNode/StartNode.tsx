@@ -12,6 +12,7 @@ import { ProxyLocation } from "@/api/types";
 import { useQuery } from "@tanstack/react-query";
 import { Label } from "@/components/ui/label";
 import { HelpTooltip } from "@/components/HelpTooltip";
+import { WorkflowBlockInputTextarea } from "@/components/WorkflowBlockInputTextarea";
 import { Input } from "@/components/ui/input";
 import { ProxySelector } from "@/components/ProxySelector";
 import { useCredentialGetter } from "@/hooks/useCredentialGetter";
@@ -22,6 +23,8 @@ import { ModelSelector } from "@/components/ModelSelector";
 import { WorkflowModel } from "@/routes/workflows/types/workflowTypes";
 import { MAX_SCREENSHOT_SCROLLS_DEFAULT } from "../Taskv2Node/types";
 import { KeyValueInput } from "@/components/KeyValueInput";
+import { OrgWalled } from "@/components/Orgwalled";
+import { placeholders } from "@/routes/workflows/editor/helpContent";
 import { useWorkflowSettingsStore } from "@/store/WorkflowSettingsStore";
 
 function StartNode({ id, data }: NodeProps<StartNode>) {
@@ -59,6 +62,8 @@ function StartNode({ id, data }: NodeProps<StartNode>) {
       ? data.maxScreenshotScrolls
       : null,
     extraHttpHeaders: data.withWorkflowSettings ? data.extraHttpHeaders : null,
+    useScriptCache: data.withWorkflowSettings ? data.useScriptCache : false,
+    scriptCacheKey: data.withWorkflowSettings ? data.scriptCacheKey : null,
   });
 
   useEffect(() => {
@@ -131,11 +136,44 @@ function StartNode({ id, data }: NodeProps<StartNode>) {
                         }}
                       />
                     </div>
+                    <OrgWalled className="flex flex-col gap-4">
+                      <div className="space-y-2">
+                        <div className="flex items-center gap-2">
+                          <Label>Generate Script</Label>
+                          <HelpTooltip content="Generate & use cached scripts for faster execution." />
+                          <Switch
+                            className="ml-auto"
+                            checked={inputs.useScriptCache}
+                            onCheckedChange={(value) => {
+                              handleChange("useScriptCache", value);
+                            }}
+                          />
+                        </div>
+                      </div>
+                      {inputs.useScriptCache && (
+                        <div className="space-y-2">
+                          <div className="flex gap-2">
+                            <Label>Script Key (optional)</Label>
+                          </div>
+                          <WorkflowBlockInputTextarea
+                            nodeId={id}
+                            onChange={(value) => {
+                              const v = value.length ? value : null;
+                              handleChange("scriptCacheKey", v);
+                            }}
+                            value={inputs.scriptCacheKey ?? ""}
+                            placeholder={placeholders["scripts"]["scriptKey"]}
+                            className="nopan text-xs"
+                          />
+                        </div>
+                      )}
+                    </OrgWalled>
                     <div className="space-y-2">
                       <div className="flex items-center gap-2">
                         <Label>Save &amp; Reuse Session</Label>
                         <HelpTooltip content="Persist session information across workflow runs" />
                         <Switch
+                          className="ml-auto"
                           checked={inputs.persistBrowserSession}
                           onCheckedChange={(value) => {
                             handleChange("persistBrowserSession", value);
@@ -196,6 +234,16 @@ function StartNode({ id, data }: NodeProps<StartNode>) {
       />
       <div className="w-[30rem] rounded-lg bg-slate-elevation3 px-6 py-4 text-center">
         Start
+        <div className="mt-4 flex gap-3 rounded-md bg-slate-800 p-3">
+          <span className="rounded bg-slate-700 p-1 text-lg">💡</span>
+          <div className="space-y-1 text-left text-xs text-slate-400">
+            Use{" "}
+            <code className="text-white">
+              &#123;&#123;&nbsp;current_value&nbsp;&#125;&#125;
+            </code>{" "}
+            to get the current loop value for a given iteration.
+          </div>
+        </div>
       </div>
     </div>
   );

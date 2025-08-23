@@ -5,20 +5,27 @@ import { useLocation, useNavigate, useParams } from "react-router-dom";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 
 import { getClient } from "@/api/AxiosClient";
-import { ProxyLocation, User } from "@/api/types";
+import { ProxyLocation } from "@/api/types";
 import { Timer } from "@/components/Timer";
 import { toast } from "@/components/ui/use-toast";
+import { useLogging } from "@/hooks/useLogging";
 import { useCredentialGetter } from "@/hooks/useCredentialGetter";
+
 import { useNodeLabelChangeHandler } from "@/routes/workflows/hooks/useLabelChangeHandler";
 import { useDeleteNodeCallback } from "@/routes/workflows/hooks/useDeleteNodeCallback";
+import { useToggleScriptForNodeCallback } from "@/routes/workflows/hooks/useToggleScriptForNodeCallback";
+import { useDebugSessionQuery } from "@/routes/workflows/hooks/useDebugSessionQuery";
 import { useWorkflowRunQuery } from "@/routes/workflows/hooks/useWorkflowRunQuery";
 import {
   debuggableWorkflowBlockTypes,
+  scriptableWorkflowBlockTypes,
   type WorkflowBlockType,
   type WorkflowApiResponse,
 } from "@/routes/workflows/types/workflowTypes";
 import { getInitialValues } from "@/routes/workflows/utils";
 import { useDebugStore } from "@/store/useDebugStore";
+import { useWorkflowPanelStore } from "@/store/WorkflowPanelStore";
+import { useWorkflowSave } from "@/store/WorkflowHasChangesStore";
 import {
   useWorkflowSettingsStore,
   type WorkflowSettingsState,
@@ -29,15 +36,11 @@ import {
   statusIsFinalized,
   statusIsRunningOrQueued,
 } from "@/routes/tasks/types";
-import {
-  useOptimisticallyRequestBrowserSessionId,
-  type OptimisticBrowserSession,
-} from "@/store/useOptimisticallyRequestBrowserSessionId";
-import { useUser } from "@/hooks/useUser";
 
 import { EditableNodeTitle } from "../components/EditableNodeTitle";
 import { NodeActionMenu } from "../NodeActionMenu";
 import { WorkflowBlockIcon } from "../WorkflowBlockIcon";
+import { workflowBlockTitle } from "../types";
 
 interface Props {
   blockLabel: string; // today, this + wpid act as the identity of a block
@@ -62,35 +65,15 @@ type Payload = Record<string, unknown> & {
   workflow_id: string;
 };
 
-const blockTypeToTitle = (type: WorkflowBlockType): string => {
-  const parts = type.split("_");
-  const capCased = parts
-    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
-    .join(" ");
-
-  return `${capCased} Block`;
-};
-
 const getPayload = (opts: {
   blockLabel: string;
-  optimistic: OptimisticBrowserSession;
+  browserSessionId: string | null;
   parameters: Record<string, unknown>;
   totpIdentifier: string | null;
   totpUrl: string | null;
-  user: User | null;
   workflowPermanentId: string;
   workflowSettings: WorkflowSettingsState;
 }): Payload | null => {
-  if (!opts.user) {
-    toast({
-      variant: "warning",
-      title: "Error",
-      description: "No user found",
-    });
-
-    return null;
-  }
-
   const webhook_url = opts.workflowSettings.webhookCallbackUrl.trim();
 
   let extraHttpHeaders = null;
@@ -108,14 +91,7 @@ const getPayload = (opts: {
     });
   }
 
-  const browserSessionData = opts.optimistic.get(
-    opts.user,
-    opts.workflowPermanentId,
-  );
-
-  const browserSessionId = browserSessionData?.browser_session_id;
-
-  if (!browserSessionId) {
+  if (!opts.browserSessionId) {
     toast({
       variant: "warning",
       title: "Error",
@@ -127,13 +103,13 @@ const getPayload = (opts: {
     toast({
       variant: "default",
       title: "Success",
-      description: `Browser session ID found: ${browserSessionId}`,
+      description: `Browser session ID found: ${opts.browserSessionId}`,
     });
   }
 
   const payload: Payload = {
     block_labels: [opts.blockLabel],
-    browser_session_id: browserSessionId,
+    browser_session_id: opts.browserSessionId,
     extra_http_headers: extraHttpHeaders,
     max_screenshot_scrolls: opts.workflowSettings.maxScreenshotScrollingTimes,
     parameters: opts.parameters,
@@ -156,33 +132,50 @@ function NodeHeader({
   totpUrl,
   type,
 }: Props) {
+  const log = useLogging();
   const {
     blockLabel: urlBlockLabel,
     workflowPermanentId,
     workflowRunId,
   } = useParams();
   const debugStore = useDebugStore();
-  const thisBlockIsPlaying =
-    urlBlockLabel !== undefined && urlBlockLabel === blockLabel;
-  const anyBlockIsPlaying =
-    urlBlockLabel !== undefined && urlBlockLabel.length > 0;
+  const { closeWorkflowPanel } = useWorkflowPanelStore();
   const workflowSettingsStore = useWorkflowSettingsStore();
   const [label, setLabel] = useNodeLabelChangeHandler({
     id: nodeId,
     initialValue: blockLabel,
   });
-  const blockTitle = blockTypeToTitle(type);
+  const blockTitle = workflowBlockTitle[type];
   const deleteNodeCallback = useDeleteNodeCallback();
+  const toggleScriptForNodeCallback = useToggleScriptForNodeCallback();
   const credentialGetter = useCredentialGetter();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const location = useLocation();
   const isDebuggable = debuggableWorkflowBlockTypes.has(type);
+  const isScriptable = scriptableWorkflowBlockTypes.has(type);
   const { data: workflowRun } = useWorkflowRunQuery();
   const workflowRunIsRunningOrQueued =
     workflowRun && statusIsRunningOrQueued(workflowRun);
-  const optimistic = useOptimisticallyRequestBrowserSessionId();
-  const user = useUser().get();
+  const { data: debugSession } = useDebugSessionQuery({
+    workflowPermanentId,
+  });
+  const saveWorkflow = useWorkflowSave();
+
+  const thisBlockIsPlaying =
+    workflowRunIsRunningOrQueued &&
+    urlBlockLabel !== undefined &&
+    urlBlockLabel === blockLabel;
+
+  const thisBlockIsTargetted =
+    urlBlockLabel !== undefined && urlBlockLabel === blockLabel;
+
+  const timerDurationOverride =
+    workflowRun && workflowRun.finished_at
+      ? new Date(workflowRun.finished_at).getTime() -
+        new Date(workflowRun.created_at).getTime() +
+        3500
+      : null;
 
   useEffect(() => {
     if (!workflowRun || !workflowPermanentId || !workflowRunId) {
@@ -193,7 +186,7 @@ function NodeHeader({
       workflowRunId === workflowRun?.workflow_run_id &&
       statusIsFinalized(workflowRun)
     ) {
-      navigate(`/workflows/${workflowPermanentId}/debug`);
+      // navigate(`/workflows/${workflowPermanentId}/debug`);
 
       if (statusIsAFailureType(workflowRun)) {
         toast({
@@ -218,8 +211,27 @@ function NodeHeader({
 
   const runBlock = useMutation({
     mutationFn: async () => {
+      closeWorkflowPanel();
+
+      await saveWorkflow.mutateAsync();
+
       if (!workflowPermanentId) {
-        console.error("There is no workflowPermanentId");
+        log.error("Run block: there is no workflowPermanentId");
+        toast({
+          variant: "destructive",
+          title: "Failed to start workflow block run",
+          description: "There is no workflowPermanentId",
+        });
+        return;
+      }
+
+      if (!debugSession) {
+        log.error("Run block: there is no debug session, yet");
+        toast({
+          variant: "destructive",
+          title: "Failed to start workflow block run",
+          description: "There is no debug session, yet",
+        });
         return;
       }
 
@@ -244,18 +256,35 @@ function NodeHeader({
 
       const body = getPayload({
         blockLabel,
-        optimistic,
+        browserSessionId: debugSession.browser_session_id,
         parameters,
         totpIdentifier,
         totpUrl,
-        user,
         workflowPermanentId,
         workflowSettings: workflowSettingsStore,
       });
 
       if (!body) {
+        log.error("Run block: could not construct run payload", {
+          workflowPermanentId,
+          blockLabel,
+          debugSessionId: debugSession.debug_session_id,
+          browserSessionId: debugSession.browser_session_id,
+        });
+        toast({
+          variant: "destructive",
+          title: "Failed to start workflow block run",
+          description: "Could not construct run payload",
+        });
         return;
       }
+
+      log.info("Run block: sending run payload", {
+        workflowPermanentId,
+        blockLabel,
+        debugSessionId: debugSession.debug_session_id,
+        browserSessionId: debugSession.browser_session_id,
+      });
 
       return await client.post<Payload, { data: { run_id: string } }>(
         "/run/workflows/blocks",
@@ -264,9 +293,27 @@ function NodeHeader({
     },
     onSuccess: (response) => {
       if (!response) {
-        console.error("No response");
+        log.error("Run block: no response", {
+          workflowPermanentId,
+          blockLabel,
+          debugSessionId: debugSession?.debug_session_id,
+          browserSessionId: debugSession?.browser_session_id,
+        });
+        toast({
+          variant: "destructive",
+          title: "Failed to start workflow block run",
+          description: "No response",
+        });
         return;
       }
+
+      log.info("Run block: run started", {
+        workflowPermanentId,
+        blockLabel,
+        debugSessionId: debugSession?.debug_session_id,
+        browserSessionId: debugSession?.browser_session_id,
+        runId: response.data.run_id,
+      });
 
       toast({
         variant: "success",
@@ -280,6 +327,14 @@ function NodeHeader({
     },
     onError: (error: AxiosError) => {
       const detail = (error.response?.data as { detail?: string })?.detail;
+      log.error("Run block: error", {
+        workflowPermanentId,
+        blockLabel,
+        debugSessionId: debugSession?.debug_session_id,
+        browserSessionId: debugSession?.browser_session_id,
+        error,
+        detail,
+      });
       toast({
         variant: "destructive",
         title: "Failed to start workflow block run",
@@ -290,28 +345,52 @@ function NodeHeader({
 
   const cancelBlock = useMutation({
     mutationFn: async () => {
-      const browserSessionId =
-        user && workflowPermanentId
-          ? optimistic.get(user, workflowPermanentId)?.browser_session_id ??
-            "<missing-browser-session-id>"
-          : "<missing-user-or-workflow-permanent-id>";
+      if (!debugSession) {
+        log.error("Cancel block: missing debug session", {
+          workflowPermanentId,
+          blockLabel,
+        });
+        toast({
+          variant: "destructive",
+          title: "Failed to cancel workflow block run",
+          description: "Missing debug session",
+        });
+        return;
+      }
+
+      const browserSessionId = debugSession.browser_session_id;
       const client = await getClient(credentialGetter);
       return client
         .post(`/runs/${browserSessionId}/workflow_run/${workflowRunId}/cancel/`)
         .then((response) => response.data);
     },
     onSuccess: () => {
+      log.info("Cancel block: canceled", {
+        workflowPermanentId,
+        blockLabel,
+        debugSessionId: debugSession?.debug_session_id,
+        browserSessionId: debugSession?.browser_session_id,
+      });
       toast({
         variant: "success",
         title: "Workflow Canceled",
         description: "The workflow has been successfully canceled.",
       });
     },
-    onError: (error) => {
+    onError: (error: AxiosError) => {
+      const detail = (error.response?.data as { detail?: string })?.detail;
+      log.error("Cancel block: error", {
+        workflowPermanentId,
+        blockLabel,
+        debugSessionId: debugSession?.debug_session_id,
+        browserSessionId: debugSession?.browser_session_id,
+        error,
+        detail,
+      });
       toast({
         variant: "destructive",
         title: "Error",
-        description: error.message,
+        description: detail ?? error.message,
       });
     },
   });
@@ -326,10 +405,10 @@ function NodeHeader({
 
   return (
     <>
-      {thisBlockIsPlaying && (
+      {thisBlockIsTargetted && (
         <div className="flex w-full animate-[auto-height_1s_ease-in-out_forwards] items-center justify-between overflow-hidden">
           <div className="pb-4">
-            <Timer />
+            <Timer override={timerDurationOverride ?? undefined} />
           </div>
           <div className="pb-4">{workflowRun?.status ?? "pending"}</div>
         </div>
@@ -356,7 +435,7 @@ function NodeHeader({
           </div>
         </div>
         <div className="pointer-events-auto ml-auto flex items-center gap-2">
-          {thisBlockIsPlaying && workflowRunIsRunningOrQueued && (
+          {thisBlockIsPlaying && (
             <div className="ml-auto">
               <button className="rounded p-1 hover:bg-red-500 hover:text-black disabled:opacity-50">
                 {cancelBlock.isPending ? (
@@ -374,9 +453,9 @@ function NodeHeader({
           )}
           {debugStore.isDebugMode && isDebuggable && (
             <button
-              disabled={anyBlockIsPlaying}
+              disabled={workflowRunIsRunningOrQueued}
               className={cn("rounded p-1 disabled:opacity-50", {
-                "hover:bg-muted": anyBlockIsPlaying,
+                "hover:bg-muted": workflowRunIsRunningOrQueued,
               })}
             >
               {runBlock.isPending ? (
@@ -385,7 +464,7 @@ function NodeHeader({
                 <PlayIcon
                   className={cn("size-6", {
                     "fill-gray-500 text-gray-500":
-                      anyBlockIsPlaying || !workflowPermanentId,
+                      workflowRunIsRunningOrQueued || !workflowPermanentId,
                   })}
                   onClick={() => {
                     handleOnPlay();
@@ -394,17 +473,22 @@ function NodeHeader({
               )}
             </button>
           )}
-          {disabled || debugStore.isDebugMode ? null : (
+          {disabled ? null : (
             <div>
               <div
                 className={cn("rounded p-1 hover:bg-muted", {
-                  "pointer-events-none opacity-50": anyBlockIsPlaying,
+                  "pointer-events-none opacity-50":
+                    workflowRunIsRunningOrQueued,
                 })}
               >
                 <NodeActionMenu
+                  isScriptable={isScriptable}
                   onDelete={() => {
                     deleteNodeCallback(nodeId);
                   }}
+                  onShowScript={() =>
+                    toggleScriptForNodeCallback({ id: nodeId, show: true })
+                  }
                 />
               </div>
             </div>
